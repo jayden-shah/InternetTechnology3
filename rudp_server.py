@@ -23,7 +23,7 @@ Tips:
 import random, socket, struct, sys, threading
 
 # ===================== CONFIG (EDIT YOUR PORT) =====================
-ASSIGNED_PORT = 30077  # <-- REPLACE with your assigned UDP port (from Canvas)
+ASSIGNED_PORT = 30107  # <-- REPLACE with your assigned UDP port (from Canvas)
 # ==================================================================
 
 # --- Flag bits (1 byte) ---
@@ -120,6 +120,7 @@ def main():
         if msg is None:
             continue
         seq, ack, flags, pl = msg
+        log('RECV', seq, ack, flags, len(pl))
 
         # ============ PHASE 1: HANDSHAKE (YOU IMPLEMENT) ============
         # TODO:
@@ -138,7 +139,35 @@ def main():
         # HINT: use seq_add() for every "+ 1" so numbers wrap at 2^32 like TCP.
         # HINT: if the client's final ACK is lost, its first DATA packet also carries
         #       the ACK flag and ack = y + 1. Treat that as completing the handshake too.
-        pass  # <-- replace with your handshake logic
+        if client_addr is not None and addr != client_addr:
+            continue
+
+        if flags == SYN:
+            if state == 'LISTEN':
+                client_addr = addr
+                client_isn = seq
+                server_isn = random.randint(0, SEQ_MOD - 1)
+                state = 'SYN_RCVD'
+                print(f'[SERVER] Server ISN y = {server_isn}')
+            elif seq == client_isn:
+                print('[SERVER] Duplicate SYN, resending the same SYN-ACK')
+            else:
+                continue
+            ack_no = seq_add(client_isn, 1)
+            log('SEND', server_isn, ack_no, SYN | ACK, 0)
+            send_unreliable(sock, pack_msg(server_isn, ack_no, SYN | ACK), client_addr)
+            continue
+
+        if (state == 'SYN_RCVD' and (flags & ACK)
+                and ack == seq_add(server_isn, 1)
+                and seq == seq_add(client_isn, 1)):
+            state = 'ESTABLISHED'
+            expect_seq = seq_add(client_isn, 1)
+            board = Scoreboard()
+            print('[SERVER] Connection established')
+            if not pl:
+                continue  
+        # <-- replace with your handshake logic
         # ============================================================
 
         # ============ PHASE 2: DATA (YOU IMPLEMENT) =================
@@ -149,7 +178,18 @@ def main():
         #   - Else (duplicate or out of order):
         #       * do NOT deliver it; print that it was a duplicate
         #   - Either way, reply: seq = server_isn + 1, ack = expect_seq, flags = ACK
-        pass  # <-- replace with your data logic
+        if state == 'ESTABLISHED' and pl:
+            if seq == expect_seq:
+                board.apply(pl.decode())
+                expect_seq = seq_add(seq, len(pl))
+            else:
+                print(f'[SERVER] Duplicate DATA seq={seq} (expected {expect_seq}), NOT delivered')
+            reply_seq = seq_add(server_isn, 1)
+            log('SEND', reply_seq, expect_seq, ACK, 0)
+            send_unreliable(sock, pack_msg(reply_seq, expect_seq, ACK), client_addr)
+            continue
+            
+          # <-- replace with your data logic
         # ============================================================
 
         # ============ PHASE 3: TEARDOWN (YOU IMPLEMENT) =============
@@ -159,7 +199,27 @@ def main():
         #   - remember last_close = (client_addr, that FIN-ACK packet)
         #   - reset state: state='LISTEN'; client_addr=None; client_isn=None; server_isn=None; expect_seq=None
         #   - if a FIN arrives later from last_close's address, resend last_close's FIN-ACK
-        pass  # <-- replace with your teardown logic
+        if flags & FIN:
+            if state == 'ESTABLISHED' and seq == expect_seq:
+                reply_seq = seq_add(server_isn, 1)
+                ack_no = seq_add(seq, 1)
+                finack = pack_msg(reply_seq, ack_no, FIN | ACK)
+                log('SEND', reply_seq, ack_no, FIN | ACK, 0)
+                send_unreliable(sock, finack, client_addr)
+                print('[SERVER] Connection closed')
+                board.save()
+                last_close = (client_addr, finack)
+                state = 'LISTEN'
+                client_addr = None
+                client_isn = None
+                server_isn = None
+                expect_seq = None
+            elif last_close is not None and addr == last_close[0]:
+                print('[SERVER] Duplicate FIN, resending the same FIN-ACK')
+                old = unpack_msg(last_close[1])
+                log('SEND', old[0], old[1], old[2], 0)
+                send_unreliable(sock, last_close[1], addr)
+            continue  # <-- replace with your teardown logic
         # ============================================================
 
 if __name__ == '__main__':

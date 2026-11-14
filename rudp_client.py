@@ -20,7 +20,7 @@ import random, socket, struct, sys, time
 
 # ===================== CONFIG (EDIT HOST/PORT) =====================
 SERVER_HOST = '127.0.0.1'      # server IP or hostname
-ASSIGNED_PORT = 30077   # <-- REPLACE with your assigned UDP port (from Canvas)
+ASSIGNED_PORT = 30107   # <-- REPLACE with your assigned UDP port (from Canvas)
 SERVER = (SERVER_HOST, ASSIGNED_PORT)
 # ==================================================================
 
@@ -104,7 +104,27 @@ def main():
     #   - if no valid SYN-ACK after RETRIES tries: print a message and exit
     # HINT: send_recv_with_retry() takes a function that decides whether a reply is the
     #       one you are waiting for, e.g.  lambda s, a, fl, p: fl == SYN | ACK and a == seq_add(x, 1)
-    pass  # <-- replace with your handshake code
+    x = random.randint(0, SEQ_MOD - 1)
+    print(f'[CLIENT] Client ISN x = {x}')
+
+    syn = pack_msg(x, 0, SYN)
+    synack = send_recv_with_retry(
+        cli, syn,
+        lambda s, a, fl, p: fl == SYN | ACK and a == seq_add(x, 1))
+    if synack is None:
+        print(f'[CLIENT] Handshake failed: no valid SYN-ACK after {RETRIES} tries')
+        cli.close()
+        sys.exit(1)
+
+    y = synack[0]
+    print(f'[CLIENT] Server ISN y = {y}')
+
+    seq = seq_add(x, 1)
+    ack_no = seq_add(y, 1)
+    cli.sendto(pack_msg(seq, ack_no, ACK), SERVER)
+    log('SEND', seq, ack_no, ACK, 0)
+    print('[CLIENT] Connection established')
+      # <-- replace with your handshake code
     # ===============================================================
 
     # ============ PHASE 2: DATA SEND LOOP (YOU IMPLEMENT) =========
@@ -115,7 +135,19 @@ def main():
     #       * send DATA and wait (with retry) for an ACK with ack == seq + len(payload)
     #       * on success: seq = seq + len(payload)
     #       * on failure: print a message and exit
-    pass  # <-- replace with your data send loop
+    for event in events:
+        payload = event.encode()
+        want = seq_add(seq, len(payload))      # the ack number that confirms this event
+        pkt = pack_msg(seq, ack_no, ACK, payload)
+        reply = send_recv_with_retry(
+            cli, pkt,
+            lambda s, a, fl, p: fl == ACK and a == want)
+        if reply is None:
+            print(f'[CLIENT] Gave up on seq={seq} after {RETRIES} tries: {event}')
+            cli.close()
+            sys.exit(1)
+        seq = want
+      # <-- replace with your data send loop
     # ===============================================================
 
     # ============ PHASE 3: TEARDOWN (YOU IMPLEMENT) ===============
@@ -123,7 +155,15 @@ def main():
     #   - send FIN: seq = your current seq, ack = y + 1, flags = FIN
     #   - wait (with retry) for a FIN-ACK whose ack == your seq + 1
     #   - on success print('[CLIENT] Connection closed')
-    pass  # <-- replace with your teardown code
+    fin = pack_msg(seq, ack_no, FIN)
+    finack = send_recv_with_retry(
+        cli, fin,
+        lambda s, a, fl, p: fl == FIN | ACK and a == seq_add(seq, 1))
+    if finack is None:
+        print(f'[CLIENT] Teardown failed: no valid FIN-ACK after {RETRIES} tries')
+        cli.close()
+        sys.exit(1)
+    print('[CLIENT] Connection closed')  # <-- replace with your teardown code
     # ===============================================================
 
     cli.close()
